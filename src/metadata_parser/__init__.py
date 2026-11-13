@@ -46,6 +46,10 @@ from .exceptions import NotParsableRedirect
 from .exceptions import RedirectDetected
 from .exceptions import SecurityPolicyViolation_URL_Initial
 from .exceptions import SecurityPolicyViolation_URL_Redirect
+from .opengraph_media import build_opengraph_media_groups
+from .opengraph_media import OpenGraphMediaDiagnostic  # noqa: F401  public type
+from .opengraph_media import OpenGraphMediaGroup
+from .opengraph_media import OpenGraphMediaQuery
 from .regex import RE_ALL_NUMERIC
 from .regex import RE_canonical
 from .regex import RE_doctype
@@ -926,6 +930,10 @@ class MetadataParser(object):
 
     response: Optional["TYPES_RESPONSE"]
 
+    # lazily-built structured OpenGraph media query cache, keyed by
+    # (allow_encoded_uri, require_public_global); invalidated on parse()
+    _opengraph_media_cache: Dict[Tuple[bool, bool], "OpenGraphMediaQuery"]
+
     def __init__(
         self,
         url: Optional[str] = None,
@@ -1075,6 +1083,7 @@ class MetadataParser(object):
                 raise ValueError("`url_actual` requires cached `html`")
             url_actual = url_actual.strip()
         self.parsed_result = ParsedResult()
+        self._opengraph_media_cache = {}
         if cached_urlparser_maxitems:
             if cached_urlparser is not True:
                 raise ValueError(
@@ -1657,6 +1666,10 @@ class MetadataParser(object):
         # stash the bs4 doc for further operations
         # do this now, otherwise it's a pain to debug if we return
         self.parsed_result.soup = doc
+
+        # the structured media query is derived from the document below;
+        # a re-parse must not serve a stale cached result
+        self._opengraph_media_cache = {}
 
         # let's ensure that we have a real document...
         if not doc or not doc.html:
@@ -2252,3 +2265,113 @@ class MetadataParser(object):
                 return value_fixed
 
         return None
+
+    # --------------------------------------------------------------------------
+
+    def get_opengraph_media(
+        self,
+        media_type: Optional[str] = None,
+        *,
+        allow_encoded_uri: bool = False,
+        require_public_global: bool = True,
+        refresh: bool = False,
+    ) -> OpenGraphMediaQuery:
+        """Return structured OpenGraph image/video/audio groups.
+
+        Unlike the flattened ``metadata['og']`` store, this preserves the
+        document's structured media model: every ``og:image`` / ``og:video``
+        / ``og:audio`` root declaration opens a distinct group (duplicate
+        roots are not merged), and subsequent same-type sub-properties attach
+        to the nearest root of that type. Interleaved media families never
+        cross-pollinate.
+
+        Each group exposes both the raw declared values and normalized URLs
+        built from the final response URL, relative-address reconstruction
+        and the HTTPS rules for ``secure_url`` fields. Group-level
+        diagnostics isolate empty values, orphan sub-properties, conflicting
+        values, illegal dimensions and un-normalizable URLs without dropping
+        the other groups.
+
+        Results are cached per parser and option combination, and are
+        consistent whether derived from the parsed HTML or replayed from
+        stored metadata; the query never mutates the parsed metadata.
+        Re-parsing invalidates the cache.
+
+        :param media_type: optional filter, one of ``"image"``, ``"video"``
+            or ``"audio"``. ``None`` (the default) returns every family.
+        :param allow_encoded_uri: return ``data:image/...`` values instead of
+            dropping them, mirroring ``get_metadata_link()``.
+        :param require_public_global: apply the same URL normalization and
+            localhost filtering as ``get_metadata_link()``; when ``False``
+            local metadata URLs are preserved where the underlying
+            reconstructor permits them.
+        :param refresh: rebuild the query instead of serving the cached one.
+        :raises ValueError: if ``media_type`` is not a supported family.
+        """
+        if media_type is not None and media_type not in ("image", "video", "audio"):
+            raise ValueError(
+                "`media_type` must be one of ('image', 'video', 'audio') or None,"
+                " got `%s`" % media_type
+            )
+        cache_key = (allow_encoded_uri, require_public_global)
+        if refresh or cache_key not in self._opengraph_media_cache:
+            self._opengraph_media_cache[cache_key] = build_opengraph_media_groups(
+                self,
+                allow_encoded_uri=allow_encoded_uri,
+                require_public_global=require_public_global,
+            )
+        query = self._opengraph_media_cache[cache_key]
+        if media_type is None:
+            return query
+        groups = [group for group in query.groups if group.media_type == media_type]
+        diagnostics = [
+            diagnostic
+            for diagnostic in query.diagnostics
+            if diagnostic.media_type == media_type
+        ]
+        return OpenGraphMediaQuery(groups=groups, diagnostics=diagnostics)
+
+    def get_opengraph_images(
+        self,
+        *,
+        allow_encoded_uri: bool = False,
+        require_public_global: bool = True,
+        refresh: bool = False,
+    ) -> List[OpenGraphMediaGroup]:
+        """Convenience wrapper returning the structured ``og:image`` groups."""
+        return self.get_opengraph_media(
+            "image",
+            allow_encoded_uri=allow_encoded_uri,
+            require_public_global=require_public_global,
+            refresh=refresh,
+        ).groups
+
+    def get_opengraph_videos(
+        self,
+        *,
+        allow_encoded_uri: bool = False,
+        require_public_global: bool = True,
+        refresh: bool = False,
+    ) -> List[OpenGraphMediaGroup]:
+        """Convenience wrapper returning the structured ``og:video`` groups."""
+        return self.get_opengraph_media(
+            "video",
+            allow_encoded_uri=allow_encoded_uri,
+            require_public_global=require_public_global,
+            refresh=refresh,
+        ).groups
+
+    def get_opengraph_audios(
+        self,
+        *,
+        allow_encoded_uri: bool = False,
+        require_public_global: bool = True,
+        refresh: bool = False,
+    ) -> List[OpenGraphMediaGroup]:
+        """Convenience wrapper returning the structured ``og:audio`` groups."""
+        return self.get_opengraph_media(
+            "audio",
+            allow_encoded_uri=allow_encoded_uri,
+            require_public_global=require_public_global,
+            refresh=refresh,
+        ).groups

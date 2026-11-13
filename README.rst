@@ -484,6 +484,75 @@ has followed redirects. URL normalization and replay options are independent
 of that policy.
 
 
+Structured OpenGraph Media
+==========================
+
+The flattened ``metadata['og']`` store keeps each property in its own entry:
+repeated ``og:image`` roots collapse into one list while their
+``og:image:width`` / ``og:image:height`` siblings land in separate lists.
+Pairing a media item with its dimensions (or ``secure_url`` / ``alt`` /
+``type``) by list index is therefore unreliable.
+
+``MetadataParser.get_opengraph_media()`` reconstructs the structured
+OpenGraph model instead. Every ``og:image`` / ``og:video`` / ``og:audio``
+root declaration opens a distinct group in document order; duplicate roots
+are never merged. Subsequent same-type sub-properties attach to the nearest
+root of that type, so interleaved image, video and audio blocks never
+cross-pollinate. The ``og:<type>:url`` and ``og:<type>:secure_url``
+alternates are URL statements on the current group, not new roots.
+
+Given::
+
+    <meta property="og:image" content="https://example.com/a.jpg" />
+    <meta property="og:image:width" content="300" />
+    <meta property="og:image:height" content="200" />
+    <meta property="og:video" content="https://example.com/v.mp4" />
+    <meta property="og:video:width" content="640" />
+    <meta property="og:image" content="https://example.com/b.jpg" />
+    <meta property="og:image:width" content="100" />
+
+the query keeps each block intact::
+
+    >>> page = MetadataParser(html=html)
+    >>> query = page.get_opengraph_media()
+    >>> [(g.media_type, g.root_raw, g.width, g.height) for g in query.groups]
+    [('image', 'https://example.com/a.jpg', 300, 200),
+     ('video', 'https://example.com/v.mp4', 640, None),
+     ('image', 'https://example.com/b.jpg', 100, None)]
+
+Each :class:`~metadata_parser.OpenGraphMediaGroup` exposes both the raw
+declared value (``root_raw``) and the normalized URL (``root_url``). Every
+URL statement of the group, including the root and any ``url`` /
+``secure_url`` alternates, is available on ``group.urls`` as
+``(property, raw_value, normalized_url)`` tuples. Normalization uses the
+final response URL as the base for relative and schemeless addresses, and
+enforces the HTTPS rule for ``secure_url`` fields, with the same semantics as
+``get_metadata_link()``. The convenience wrappers
+``get_opengraph_images()``, ``get_opengraph_videos()`` and
+``get_opengraph_audios()`` return one family, and ``get_opengraph_media()``
+accepts a ``media_type`` filter for the same purpose.
+
+Malformed input is reported per group through
+:class:`~metadata_parser.OpenGraphMediaDiagnostic` entries rather than
+discarding data: orphaned sub-properties (no preceding root), empty values,
+conflicting repeated values, illegal dimensions, un-normalizable URLs and
+non-HTTPS ``secure_url`` values each get a diagnostic code. The offending raw
+value is retained, the problem is isolated to its group, and the other groups
+remain fully usable::
+
+    >>> query = page.get_opengraph_media()
+    >>> [(d.code, d.property) for d in query.diagnostics]
+    [('invalid_dimension', 'og:image:width')]
+    >>> group.is_valid  # False when the group has diagnostics
+
+The method accepts ``allow_encoded_uri`` and ``require_public_global``,
+mirroring ``get_metadata_link()``. Results are cached per parser and option
+combination and rebuilt on demand with ``refresh=True``; re-parsing a
+document invalidates the cache. The query never mutates ``metadata``, and
+the existing ``get_metadatas()`` / ``get_metadata_link()`` APIs, strategies
+and encoders continue to work on the flat store unchanged.
+
+
 Handling Bad Data
 =================
 

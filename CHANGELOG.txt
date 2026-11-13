@@ -1,4 +1,36 @@
+Unreleased
+==========
+
+* Added structured OpenGraph media extraction via
+  ``MetadataParser.get_opengraph_media()`` and the
+  ``get_opengraph_images()`` / ``get_opengraph_videos()`` /
+  ``get_opengraph_audios()`` convenience wrappers.
+
+  Every ``og:image`` / ``og:video`` / ``og:audio`` root opens a distinct
+  group in document order; duplicate roots are not merged, and same-type
+  sub-properties attach to the nearest root of that type so interleaved
+  media families never cross-pollinate. ``og:<type>:url`` and
+  ``og:<type>:secure_url`` are URL statements on the current group.
+
+  Groups expose raw values and normalized URLs (relative/schemeless
+  reconstruction against the final response URL and HTTPS enforcement for
+  ``secure_url``). Empty values, orphan sub-properties, conflicting values,
+  illegal dimensions and un-normalizable URLs produce group-level
+  ``OpenGraphMediaDiagnostic`` entries without dropping other groups.
+
+  Results are cached per parser and option combination
+  (``allow_encoded_uri`` / ``require_public_global``, with ``refresh=True``
+  to rebuild) and invalidated on re-parse. The query does not mutate the
+  parsed metadata; the flat ``metadata`` store, ``get_metadatas()``,
+  ``get_metadata_link()``, strategies and encoders are unchanged.
+
+  Public types ``OpenGraphMediaGroup``, ``OpenGraphMediaQuery`` and
+  ``OpenGraphMediaDiagnostic`` are exported from the package root, alongside
+  the ``build_opengraph_media_groups()`` entrypoint. Offline regression
+  coverage was added in ``tests/test_opengraph_media.py``.
+
 2.1.0
+=====
 
 * Added Py3.15 support
 * Raised the minimum supported Python version to 3.10 and removed the direct dependency on ``typing_extensions``.
